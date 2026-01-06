@@ -157,3 +157,43 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_home() {
+        let home = env::var("HOME").unwrap();
+        assert_eq!(expand_home("$HOME/foo"), format!("{home}/foo"));
+        assert_eq!(expand_home("/absolute/path"), "/absolute/path");
+        assert_eq!(expand_home("relative"), "relative");
+    }
+
+    #[test]
+    fn test_collapse_home() {
+        let home = env::var("HOME").unwrap();
+        assert_eq!(collapse_home(&format!("{home}/foo")), "$HOME/foo");
+        assert_eq!(collapse_home("/other/path"), "/other/path");
+    }
+
+    #[test]
+    fn test_parse_bookmark_line() {
+        let line = "$HOME/projects|proj";
+        let mut parts = line.splitn(2, '|');
+        let path = parts.next().unwrap();
+        let name = parts.next().unwrap();
+        assert_eq!(path, "$HOME/projects");
+        assert_eq!(name, "proj");
+    }
+
+    #[test]
+    fn test_parse_bookmark_with_pipe_in_path() {
+        let line = "$HOME/path|with|pipe|name";
+        let mut parts = line.splitn(2, '|');
+        let path = parts.next().unwrap();
+        let name = parts.next().unwrap();
+        assert_eq!(path, "$HOME/path");
+        assert_eq!(name, "with|pipe|name");
+    }
+}

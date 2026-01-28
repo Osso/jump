@@ -4,6 +4,42 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
+
+#[derive(Parser)]
+#[command(name = "jump", about = "Directory bookmark manager")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Bookmark name to jump to (when no subcommand given)
+    #[arg(value_name = "NAME")]
+    name: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Add current directory as a bookmark
+    Add {
+        /// Name for the bookmark
+        name: String,
+    },
+    /// List all bookmarks
+    List,
+    /// Remove a bookmark
+    Rm {
+        /// Name of the bookmark to remove
+        name: String,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
 fn bookmarks_path() -> PathBuf {
     let home = env::var("HOME").expect("HOME not set");
     PathBuf::from(home).join(".config/jump/bookmarks")
@@ -104,10 +140,7 @@ fn showmarks() -> ExitCode {
 
 fn deletemark(name: &str) -> ExitCode {
     let bookmarks = read_bookmarks();
-    let new_bookmarks: Vec<_> = bookmarks
-        .into_iter()
-        .filter(|(_, n)| n != name)
-        .collect();
+    let new_bookmarks: Vec<_> = bookmarks.into_iter().filter(|(_, n)| n != name).collect();
 
     if new_bookmarks.len() == read_bookmarks().len() {
         eprintln!("Bookmark '{name}' not found");
@@ -119,41 +152,29 @@ fn deletemark(name: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn usage() {
-    eprintln!("Usage:");
-    eprintln!("  jump <name>        Jump to bookmark");
-    eprintln!("  jump add <name>    Add current directory as bookmark");
-    eprintln!("  jump list          List all bookmarks");
-    eprintln!("  jump rm <name>     Remove bookmark");
+fn print_completions(shell: Shell) {
+    let mut cmd = Cli::command();
+    generate(shell, &mut cmd, "jump", &mut std::io::stdout());
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    match args.get(1).map(|s| s.as_str()) {
-        Some("add") => match args.get(2) {
-            Some(name) => bookmark(name),
-            None => {
-                eprintln!("Usage: jump add <name>");
-                ExitCode::FAILURE
-            }
-        },
-        Some("list") => showmarks(),
-        Some("rm") => match args.get(2) {
-            Some(name) => deletemark(name),
-            None => {
-                eprintln!("Usage: jump rm <name>");
-                ExitCode::FAILURE
-            }
-        },
-        Some("--help" | "-h") => {
-            usage();
+    match cli.command {
+        Some(Commands::Add { name }) => bookmark(&name),
+        Some(Commands::List) => showmarks(),
+        Some(Commands::Rm { name }) => deletemark(&name),
+        Some(Commands::Completions { shell }) => {
+            print_completions(shell);
             ExitCode::SUCCESS
         }
-        Some(name) => jump(name),
         None => {
-            usage();
-            ExitCode::FAILURE
+            if let Some(name) = cli.name {
+                jump(&name)
+            } else {
+                Cli::command().print_help().ok();
+                ExitCode::FAILURE
+            }
         }
     }
 }

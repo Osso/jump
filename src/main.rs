@@ -1,3 +1,5 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -152,11 +154,13 @@ fn deletemark(name: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn print_completions(shell: Shell) {
     let mut cmd = Cli::command();
     generate(shell, &mut cmd, "jump", &mut std::io::stdout());
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -182,6 +186,28 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_home<T>(run: impl FnOnce(&tempfile::TempDir) -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let old_home = env::var_os("HOME");
+        // SAFETY: tests that mutate HOME hold ENV_LOCK for the full mutation
+        // window, so project tests in this crate do not race on process env.
+        unsafe {
+            env::set_var("HOME", tmp.path());
+        }
+        let result = run(&tmp);
+        unsafe {
+            match old_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+        }
+        result
+    }
 
     #[test]
     fn test_expand_home() {
@@ -216,5 +242,92 @@ mod tests {
         let name = parts.next().unwrap();
         assert_eq!(path, "$HOME/path");
         assert_eq!(name, "with|pipe|name");
+    }
+
+    #[test]
+    fn bookmarks_path_uses_home_config_directory() {
+        with_home(|home| {
+            assert_eq!(bookmarks_path(), home.path().join(".config/jump/bookmarks"));
+        });
+    }
+
+    #[test]
+    fn read_bookmarks_returns_empty_when_file_missing() {
+        with_home(|_| {
+            assert!(read_bookmarks().is_empty());
+        });
+    }
+
+    #[test]
+    fn write_and_read_bookmarks_round_trip_entries() {
+        with_home(|_| {
+            write_bookmarks(&[
+                ("$HOME/src".to_string(), "src".to_string()),
+                ("/tmp/work".to_string(), "work".to_string()),
+            ]);
+
+            assert_eq!(
+                read_bookmarks(),
+                vec![
+                    ("$HOME/src".to_string(), "src".to_string()),
+                    ("/tmp/work".to_string(), "work".to_string())
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn bookmark_adds_current_directory_and_rejects_duplicates() {
+        with_home(|home| {
+            let project = home.path().join("project");
+            fs::create_dir_all(&project).unwrap();
+            let old_cwd = env::current_dir().unwrap();
+            env::set_current_dir(&project).unwrap();
+
+            assert_eq!(bookmark("proj"), ExitCode::SUCCESS);
+            assert_eq!(bookmark("proj"), ExitCode::FAILURE);
+
+            env::set_current_dir(old_cwd).unwrap();
+            assert_eq!(
+                read_bookmarks(),
+                vec![("$HOME/project".to_string(), "proj".to_string())]
+            );
+        });
+    }
+
+    #[test]
+    fn jump_returns_success_for_existing_bookmark() {
+        with_home(|_| {
+            write_bookmarks(&[("$HOME/src".to_string(), "src".to_string())]);
+
+            assert_eq!(jump("src"), ExitCode::SUCCESS);
+            assert_eq!(jump("missing"), ExitCode::FAILURE);
+        });
+    }
+
+    #[test]
+    fn showmarks_succeeds_for_empty_and_non_empty_lists() {
+        with_home(|_| {
+            assert_eq!(showmarks(), ExitCode::SUCCESS);
+            write_bookmarks(&[("$HOME/src".to_string(), "src".to_string())]);
+            assert_eq!(showmarks(), ExitCode::SUCCESS);
+        });
+    }
+
+    #[test]
+    fn deletemark_removes_existing_bookmark_and_reports_missing() {
+        with_home(|_| {
+            write_bookmarks(&[
+                ("$HOME/src".to_string(), "src".to_string()),
+                ("/tmp/work".to_string(), "work".to_string()),
+            ]);
+
+            assert_eq!(deletemark("src"), ExitCode::SUCCESS);
+            assert_eq!(
+                read_bookmarks(),
+                vec![("/tmp/work".to_string(), "work".to_string())]
+            );
+            assert_eq!(deletemark("missing"), ExitCode::FAILURE);
+        });
     }
 }
